@@ -14,7 +14,7 @@ from config import BOT_TOKEN, ADMIN_IDS
 import database as db
 
 # Direct safe hardcoded values
-API_ID = 24894984
+API_ID = 24894984 
 API_HASH = "4956e23833905463efb588eb806f9804"
 
 # Bot initialization
