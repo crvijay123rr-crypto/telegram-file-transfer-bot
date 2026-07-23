@@ -25,7 +25,7 @@ active_transfer_tasks = {}
 
 SESSION_STRING_SIZE = 351
 
-print("🚀 Initializing Advanced Telegram File Transfer Bot (v5.1 - Strict Admin/Permission Verification)...")
+print("🚀 Initializing Advanced Telegram File Transfer Bot (v5.4 - Strict Admin Check Fixed)...")
 
 # ================= 1. /start COMMAND =================
 @bot.on(events.NewMessage(pattern='/start'))
@@ -39,7 +39,7 @@ async def start_command(event):
     tier_str = "👑 Premium Member" if is_premium else "🆓 Free User"
     
     msg = (
-        f"🚀 File Transfer Bot (v5.1 - Professional)\n"
+        f"🚀 File Transfer Bot (v5.4 - Professional)\n"
         f"-------------------------------------\n"
         f"👤 Status: {tier_str}\n"
         f"🔑 Session: {status_str}\n\n"
@@ -65,7 +65,7 @@ async def start_command(event):
 @bot.on(events.CallbackQuery(pattern=b"how_to_use"))
 async def how_to_use_callback(event):
     await event.answer(
-        "📖 Guide:\n1. Use /login to link account.\n2. Use /clone to set range & destination.\n3. Add optional Find/Replace rules.\n4. Click Start!",
+        "📖 Guide:\n1. Use /login to link account.\n2. Ensure Bot is Admin in destination channel.\n3. Use /clone to set range & destination.\n4. Click Start!",
         alert=True
     )
 
@@ -395,7 +395,7 @@ async def clone_command(event):
                     await status_msg.edit(
                         "🚀 Background Worker Initialized!\n"
                         f"👤 User: {user_id}\n"
-                        "⚡ Status: Smart media transfer with strict permission checks active...\n\n"
+                        "⚡ Status: Smart media transfer via Bot active...\n\n"
                         "*(Task is running in background with full resume support)*",
                         buttons=[[Button.inline("🛑 Stop Transfer", data="stop_transfer_task")]]
                     )
@@ -428,7 +428,7 @@ async def clone_command(event):
         except Exception as e:
             await conv.send_message(f"❌ Error during setup: {e}\nPlease use /clone again.", parse_mode=None)
 
-# ================= 6. BACKGROUND WORKER WITH STRICT PERMISSION CHECK & CLEAN CAPTION =================
+# ================= 6. BACKGROUND WORKER WITH STRICT BOT PERMISSION VALIDATION =================
 async def background_transfer_worker(user_id, event):
     user_client = None
     try:
@@ -452,23 +452,28 @@ async def background_transfer_worker(user_id, event):
         user_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
         await user_client.connect()
         
-        # Resolve destination entity and proactively check post/admin permissions
+        # Strict validation helper to catch missing admin/posting rights
         try:
-            destination_entity = await user_client.get_entity(destination_raw)
-            destination = await user_client.get_input_entity(destination_raw)
+            destination_entity = await bot.get_entity(destination_raw)
+            destination = await bot.get_input_entity(destination_raw)
             
-            # Check if user has permission to post in channel/group
-            # For channels/supergroups, verify participant admin rights or post rights
-            perms = await user_client.get_permissions(destination_entity, 'me')
-            if perms and hasattr(perms, 'is_admin') and not perms.is_admin and hasattr(perms, 'post') and not perms.post:
-                # If neither admin nor allowed to post, trigger prompt
-                raise ChatAdminRequiredError("User lacks posting permissions in this channel.")
+            # Check bot permissions inside the destination
+            perms = await bot.get_permissions(destination_entity, 'me')
+            
+            # Agar bot admin nahi hai ya uske paas post/send permissions nahi hain
+            is_admin_check = getattr(perms, 'is_admin', False)
+            can_post_check = getattr(perms, 'post', True) # Agar default True bhi ho to admin check main handle hoga
+            
+            # Agar channel hai aur bot admin nahi hai toh error raise karo
+            if perms and hasattr(perms, 'is_admin') and not perms.is_admin:
+                raise ChatAdminRequiredError("Bot is not an admin in the destination channel.")
                 
-        except ChatAdminRequiredError:
+        except Exception as perm_err:
+            print(f"Strict Permission Check Triggered Error: {perm_err}")
             await event.edit(
-                "⚠️ **Admin Permission Required!**\n\n"
-                "Your account is **not an Administrator** or lacks posting rights in the destination channel/group.\n"
-                "👉 Please make your account an Admin, then click Retry below.",
+                "⚠️ **Bot Admin Permission Required!**\n\n"
+                "The Telegram Bot is **not an Administrator** in the destination channel/group, or lacks permissions.\n"
+                "👉 Please add the bot as an Admin with post rights in your destination channel, then click Retry below.",
                 buttons=[
                     [Button.inline("🔄 Retry Transfer", data="retry_transfer_task")],
                     [Button.inline("🛑 Stop Transfer", data="stop_transfer_task")]
@@ -480,9 +485,6 @@ async def background_transfer_worker(user_id, event):
                 {"$set": {"status": "paused"}}
             )
             return
-        except Exception as ent_err:
-            print(f"Entity/Permission check notice: {ent_err}, proceeding with raw destination...")
-            destination = destination_raw
         
         while current <= end:
             chk = await db.tasks_collection.find_one({"user_id": user_id})
@@ -493,17 +495,16 @@ async def background_transfer_worker(user_id, event):
                 msg = await user_client.get_messages(source_channel, ids=current)
                 
                 if msg:
-                    # Clean up markdown text or extra symbols properly
                     caption = msg.text or msg.caption or ""
                     
-                    # 1. Apply Caption Find & Replace Rule safely if present
                     if caption_rule and isinstance(caption_rule, dict):
                         old_str = caption_rule.get("old", "")
                         new_str = caption_rule.get("new", "")
                         if old_str and old_str in caption:
                             caption = caption.replace(old_str, new_str)
                     
-                    # 2. Handle Media messages
+                    parse_format = 'md'
+
                     if msg.media:
                         file_path = await user_client.download_media(msg, file="downloads/")
                         
@@ -511,7 +512,6 @@ async def background_transfer_worker(user_id, event):
                             original_filename = os.path.basename(file_path)
                             new_filename = original_filename
                             
-                            # Apply Filename Rule if available
                             if filename_rule and isinstance(filename_rule, dict):
                                 f_old = filename_rule.get("old", "")
                                 f_new = filename_rule.get("new", "")
@@ -527,18 +527,18 @@ async def background_transfer_worker(user_id, event):
                             is_img = msg.photo or any(ext in original_filename.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
                             
                             try:
-                                await user_client.send_file(
+                                await bot.send_file(
                                     destination,
                                     file_path,
                                     caption=caption if caption else None,
                                     force_document=False if (is_vid or is_aud or is_img) else True,
-                                    parse_mode=None
+                                    parse_mode=parse_format
                                 )
                             except ChatAdminRequiredError:
                                 await event.edit(
-                                    "⚠️ **Admin Permission Required!**\n\n"
-                                    "Bot/Account is not an **Administrator** in the destination channel/group.\n"
-                                    "👉 Please make your account an Admin, then click Retry below.",
+                                    "⚠️ **Bot Admin Permission Required!**\n\n"
+                                    "Bot lost admin rights or is not an **Administrator** in the destination channel.\n"
+                                    "👉 Please check admin rights, then click Retry below.",
                                     buttons=[
                                         [Button.inline("🔄 Retry Transfer", data="retry_transfer_task")],
                                         [Button.inline("🛑 Stop Transfer", data="stop_transfer_task")]
@@ -557,12 +557,16 @@ async def background_transfer_worker(user_id, event):
                                 pass
                     elif msg.text or caption:
                         try:
-                            await user_client.send_message(destination, caption if caption else msg.text, parse_mode=None)
+                            await bot.send_message(
+                                destination, 
+                                caption if caption else msg.text, 
+                                parse_mode=parse_format
+                            )
                         except ChatAdminRequiredError:
                             await event.edit(
-                                "⚠️ **Admin Permission Required!**\n\n"
-                                "Bot/Account is not an **Administrator** in the destination channel/group.\n"
-                                "👉 Please make your account an Admin, then click Retry below.",
+                                "⚠️ **Bot Admin Permission Required!**\n\n"
+                                "Bot is not an **Administrator** in the destination channel/group.\n"
+                                "👉 Please make the bot an Admin, then click Retry below.",
                                 buttons=[
                                     [Button.inline("🔄 Retry Transfer", data="retry_transfer_task")],
                                     [Button.inline("🛑 Stop Transfer", data="stop_transfer_task")]
@@ -575,13 +579,12 @@ async def background_transfer_worker(user_id, event):
                             )
                             return
                 
-                # Live status update
                 try:
                     progress_text = (
                         f"🚀 Transferring Files (Live Status)\n"
                         f"-------------------------------------\n"
                         f"🆔 Processed Message ID: {current} of {end}\n"
-                        f"🟢 Status: Successfully Transferred!"
+                        f"🟢 Status: Successfully Transferred via Bot!"
                     )
                     await event.edit(progress_text, buttons=[[Button.inline("🛑 Stop Transfer", data="stop_transfer_task")]], parse_mode=None)
                 except Exception:
@@ -597,7 +600,7 @@ async def background_transfer_worker(user_id, event):
             current += 1
             await asyncio.sleep(1)
             
-        await bot.send_message(user_id, "✅ File Transfer & Download/Upload Completed Successfully!", parse_mode=None)
+        await bot.send_message(user_id, "✅ File Transfer & Download/Upload Completed Successfully via Bot!", parse_mode=None)
         
     except asyncio.CancelledError:
         print(f"Transfer task for user {user_id} was cancelled.")
